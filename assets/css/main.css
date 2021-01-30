@@ -12,7 +12,7 @@
 /* The sidebar menu */
 .sidenav {
 	width: 100px;
-	position: absolute;
+	/*position: absolute;*/
 	z-index: 1;
 	top: 200px;
 	left: 100px;
