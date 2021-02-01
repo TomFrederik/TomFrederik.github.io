@@ -54,27 +54,59 @@
 				</header>
 
 				<nav id="TOC" role="doc-toc">
-				</nav>
-				<p>I recently learned about neural ODEs and I found some things a bit confusing at first so I thought I might explain them from my perspective to possibly help others to better or easier understand the topic. That being said, there are other good resources to this material, I’ll link to them later in the post.</p>
-				<h3 id="ok-so-what-are-neural-odes">Ok so what <em>are</em> neural ODEs?</h3>
-				<p>Most importantly, they are <em>not</em> a new network architecture by themselves. I like to think of them as a framework <em>around</em> an existing neural network, changing the interpretation of that network and they way it is used.</p>
-				<p>I’ll assume some familiarity with multivariate calculus for this post.</p>
-				<p>Let’s say you have some system, where you don’t quite know how it evolves over time, but you can periodically measure it’s state. You decide that this system likely follows an ordinary differential equation (ODE). If we denote the state of the system at time <span class="math inline">\(t\)</span> with <span class="math inline">\(y(t)\)</span>, then an ODE of order <span class="math inline">\(n\)</span> is an equation of the form <span class="math inline">\(y^{(n)} = F(t, y^{(n-1)}, \ldots, y)\)</span>, i.e. the <span class="math inline">\(n-th\)</span> derivative of <span class="math inline">\(y\)</span> behaves according to some function <span class="math inline">\(F\)</span> of the lower order derivatives, and potentially explicitly of the time <span class="math inline">\(t\)</span>.</p>
-				<p>For the remainder of this post we will only look at first-order ODEs, i.e. equations of the form <span class="math inline">\(\dot y(t) = f(y(t), t)\)</span> for some function <span class="math inline">\(f\)</span>. This is not as restrictive as it looks since we can introduce auxiliary variables <span class="math inline">\(z(t) = \dot y(t)\)</span> to create a system of first-order ODEs from a second order ODE, and repeat the process for higher order ODEs [citation needed].</p>
-				<p>For a neural ODE you need two essential things:</p>
 				<ul>
-				<li>A neural network. This network should take as input a value <span class="math inline">\(y(t)\)</span> and a time <span class="math inline">\(t\)</span> and put out its estimate of <span class="math inline">\(f(y(t), t)\)</span>. Almost any commonly used neural network architecture is fair game. Some forms of attention mechanisms have problems around the uniqueness of the found solutions because they are not Lipschitz, but except for those, go nuts.</li>
-				<li>A (blackbox) ODE solver. This solver should take as input our function <span class="math inline">\(f\)</span> from above, the initial value <span class="math inline">\(y(t_0)\)</span> and an end time <span class="math inline">\(t^\star\)</span>. It then calculates (an approximation of) <span class="math inline">\(y(t^\star)\)</span> based on the given dynamics model <span class="math inline">\(f\)</span>. I won’t go into any detail of how ODE solvers work. Okay, now that we have those two building blocks, we can build our neural ODE model!</li>
+				<li><a href="#ordinary-differential-equations">Ordinary Differential Equations</a></li>
+				<li><a href="#ok-so-what-are-neural-odes">Ok so what <em>are</em> neural ODEs?</a></li>
+				<li><a href="#how-the-neural-ode-model-computes-its-prediction">How the Neural ODE model computes its prediction:</a></li>
+				<li><a href="#backprop">Backprop</a></li>
+				<li><a href="#use-cases">Use Cases</a></li>
 				</ul>
-				<h3 id="how-the-neural-ode-model-computes-its-prediction">How the Neural ODE model computes its prediction:</h3>
+				</nav>
+
+				<p>I recently learned about neural ODEs and I found some things a bit confusing at first so I thought I might explain them from my perspective to possibly help others to better or easier understand the topic. That being said, there are other good resources to this material, I’ll link to them later in the post.</p>
+				<p>I’ll assume some familiarity with multivariate calculus for this post.</p>
+				<h2 id="ordinary-differential-equations">Ordinary Differential Equations</h2>
+				<p>Let’s say you have some system <span class="math inline">\(y(t)\)</span> of which you don’t quite know how it evolves over time. For example this system could be a pendulum, and since you didn’t pay attention in your physics class you forgot how it behaves.</p>
+				<p>Since you remember the lecturer saying something about differential equations you decide that the pendulum likely follows an ordinary differential equation (ODE). This is not unreasonable since it seems to be true of the physical world in many aspects. So you review what you know about ODEs…</p>
+				<p>An ODE of order <span class="math inline">\(n\)</span> is an equation of the form <span class="math display">\[y^{(n)} = f(y^{(n-1)}, \ldots, y, t),\]</span> i.e. the <span class="math inline">\(n\)</span>-th derivative of <span class="math inline">\(y\)</span> behaves according to some function <span class="math inline">\(f\)</span> of the lower order derivatives, and potentially explicitly of the time <span class="math inline">\(t\)</span>.</p>
+				<p>For the remainder of this post we will only look at <em>first-order</em> ODEs, i.e. equations of the form <span class="math display">\[\dot y(t) = f(y(t), t)\]</span> for some function <span class="math inline">\(f\)</span> (<span class="math inline">\(\dot y(t)\)</span> is a different way of writing <span class="math inline">\(\frac{\partial y}{\partial t}(t)\)</span> ).</p>
+				<p>This is not as restrictive as it may seem since we can introduce auxiliary variables <span class="math inline">\(z(t) = \dot y(t)\)</span> to create a system of first-order ODEs from a second order ODE, and repeat the process for higher order ODEs<sup>[citation needed]</sup>.</p>
+				<p>In the example of the pendulum, you would for example look at the angle <span class="math inline">\(y(t) := \phi(t)\)</span> that the pendulum has to the vertical line at time <span class="math inline">\(t\)</span>. In that case, <span class="math inline">\(f(\phi(t), t)\)</span> describes how the angle of the pendulum changes over time.</p>
+				<p>If you knew the function <span class="math inline">\(f\)</span> you could use known techniques to <em>solve</em> the ODE. Solving means that you can compute the exact coordinates <span class="math inline">\(\phi(t^\star)\)</span> at some point in time <span class="math inline">\(t^\star\)</span>, given the starting point <span class="math inline">\(\phi(t_0)\)</span> of the pendulum at some initial time <span class="math inline">\(t_0\)</span>. However, you do not know the exact dynamics <span class="math inline">\(f\)</span>. But what you do have are some measurements of the angle at some points in time after the pendulum was let go at <span class="math inline">\(t_0\)</span>.</p>
+				<p>How can you predict the dynamics of the system, given this data?</p>
+				<p>Enter Neural ODEs!</p>
+				<h2 id="ok-so-what-are-neural-odes">Ok so what <em>are</em> neural ODEs?</h2>
+				<p>For a neural ODE you need two essential things:</p>
+				<ol type="1">
+				<li>A neural network. This network should take as input a value <span class="math inline">\(y(t)\)</span> and a time <span class="math inline">\(t\)</span> and put out its estimate of <span class="math inline">\(f(y(t), t)\)</span>. Almost any commonly used neural network architecture is fair game. Some forms of attention mechanisms have problems around the uniqueness of the found solutions because they are not Lipschitz, but except for those, go nuts.
+				<ul>
+				<li>That means the neural network is <em>interpreted</em> as modeling the dynamics of the system in question.</li>
+				</ul></li>
+				<li>A (blackbox) ODE solver. This solver should take as input our function <span class="math inline">\(f\)</span> from above, the initial value <span class="math inline">\(y(t_0)\)</span> and an end time <span class="math inline">\(t^\star\)</span>. It then calculates (an approximation of) <span class="math inline">\(y(t^\star)\)</span> based on the given dynamics model <span class="math inline">\(f\)</span>. I won’t go into any detail of how ODE solvers work.</li>
+				</ol>
+				<p>Importantly, Neural ODEs are <em>not</em> a new network architecture by themselves. I like to think of them more as a framework <em>around</em> an existing neural network, changing the <em>interpretation</em> of that network and they way it is used.</p>
+				<p>Okay, now that we have those two building blocks, we can build our neural ODE model!</p>
+				<h2 id="how-the-neural-ode-model-computes-its-prediction">How the Neural ODE model computes its prediction:</h2>
 				<ul>
 				<li>The input to the model is a tuple of the initial state <span class="math inline">\(y(t_0)\)</span>, the initial time <span class="math inline">\(t_0\)</span> and the end time <span class="math inline">\(t^\star\)</span>.</li>
-				<li>At step <span class="math inline">\(k\)</span> in the training process the neural network function is given as <span class="math inline">\(f_k(y, t)\)</span>.</li>
-				<li>For the given initial state, initial time and dynamics model (given by the neural network), the ODE solver now computes <span class="math inline">\(y(t^\star)\)</span>, i.e. the state of the system at time <span class="math inline">\(t^\star\)</span> if started in <span class="math inline">\(y(t_0)\)</span> at time <span class="math inline">\(t_0\)</span> and the system evolves under <span class="math inline">\(f_k(y, t)\)</span>.</li>
+				<li>At step <span class="math inline">\(k\)</span> in the training process, the neural network function is given as <span class="math inline">\(f_k:(y, t)\mapsto \dot y(t)\)</span>.</li>
+				<li>For the given initial state, initial time and dynamics model, the ODE solver now computes <span class="math inline">\(y(t^\star)\)</span>, i.e. the state of the system at time <span class="math inline">\(t^\star\)</span> if started in <span class="math inline">\(y(t_0)\)</span> at time <span class="math inline">\(t_0\)</span> and the system evolves under <span class="math inline">\(f_k(y, t)\)</span>.</li>
 				<li>This predicted <span class="math inline">\(y(t^\star)\)</span> can now be scored against our ground truth in the training set, e.g. via the MSE loss.</li>
 				</ul>
-				<p>Usually this is the point where we call the backward pass function and let the autodiff library of our choice do its magic. But… how the <em>hell</em> do we compute the gradients of the loss in this case? We have a blackbox ODE which calls our neural network many many times over the course of a single forward pass and its outputs at every step depend on all the previous outputs. Yes, we could do BPTT, but that would be very expensive and potentially suffer from similar issues as long-run dependencies in RNNs.</p>
+				<h2 id="backprop">Backprop</h2>
+				<p>Usually this is the point where we call the backward pass function and let the autodiff library of our choice do its magic. But… how the <em>hell</em> do we compute the gradients of the loss in this case? We have a blackbox ODE which calls our neural network many many times over the course of a single forward pass and its outputs at every step depend on all the previous outputs. Standard backprop would be very costly in this case!</p>
 				<p>Luckily, there is a solution to more efficiently compute the gradient, using something called the adjoint method.</p>
+				<p>For now, I will not go into that in more detail, but there are good resources on this, not least of which is the original Neural ODE paper.</p>
+				<h2 id="use-cases">Use Cases</h2>
+				<p>So far we always treated the network as modeling the dynamics of a real, physical system, and that is certainly one application of the idea. However, we can also conceptualize the computation of an arbitrary network as a dynamical system:</p>
+				<ul>
+				<li>initial state: input to the network (e.g. an image)</li>
+				<li>start time: 0 (chosen arbitrarily)</li>
+				<li>final state: prediction (e.g. some score between 0 and 1).</li>
+				<li>final time: 1 (arbitrary)</li>
+				</ul>
+				<p>Then, the system’s state start at the input and then evolves under the network-given dynamics towards the output.</p>
+				<p>Framing the standard supervised classification problem this way means we can extend our neural ODE model to that whole class of problems as well! Similarly with generative models, such as normalizing flows.</p>
 			</div>
 		</section>	
 
